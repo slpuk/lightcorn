@@ -1,8 +1,8 @@
 # Lightcorn
 > A lightweight ASGI server for Python with zero dependencies.
 
-![Protocol Version](https://img.shields.io/badge/version-0.0.1-blue?style=for-the-badge)
-![Development Status](https://img.shields.io/badge/status-pre—alpha-red?style=for-the-badge)
+![Protocol Version](https://img.shields.io/badge/version-0.1.0-blue?style=for-the-badge)
+![Development Status](https://img.shields.io/badge/status-pre—alpha-darkred?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
 ![Python](https://img.shields.io/badge/python-3.7+-blue?style=for-the-badge&logo=python&logoColor=white)
 
