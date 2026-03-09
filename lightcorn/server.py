@@ -2,6 +2,7 @@ import asyncio
 
 __version__ = "0.1.0-alpha.0"
 
+
 class Server:
     def __init__(self, host="127.0.0.1", port=8000):
         self.host = host
