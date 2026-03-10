@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lightcorn"
-version = "0.1.0-alpha.0"
+version = "0.3.0-alpha.2"
 authors = [
     {name = "slpuk", email = "yarik6052@gmail.com"},
 ]
