@@ -1,5 +1,5 @@
-from .server import Server
+from .server import Server, Config
 
-__version__ = "0.3.0-alpha.2"
+__version__ = Server.__version__
 __author__ = "slpuk"
-__all__ = ["Server"]
+__all__ = ["Server", "Config"]
