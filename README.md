@@ -4,7 +4,7 @@
 
 > A lightweight ASGI server for Python with zero dependencies
 
-![Protocol Version](https://img.shields.io/badge/version-0.4.0-blue?style=for-the-badge)
+![Protocol Version](https://img.shields.io/badge/version-0.5.0-blue?style=for-the-badge)
 ![Development Status](https://img.shields.io/badge/status-alpha-red?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
 ![Python](https://img.shields.io/badge/python-3.7+-blue?style=for-the-badge&logo=python&logoColor=white)
@@ -17,7 +17,8 @@
 lightcorn
 ├── lightcorn/
 │   ├── __init__.py     # Package exports and metadata
-│   └─── server.py      # Core server implementation
+│   ├── logger.py       # Loggity-based logger module
+│   └── server.py       # Core server implementation
 ├── LICENSE             # MIT license
 ├── pyproject.toml      # PyPI config
 └── README.md           # This file
