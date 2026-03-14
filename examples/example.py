@@ -1,8 +1,16 @@
 import asyncio
 import time
-from lightcorn import Server
+from lightcorn import Server, Config
 
-app = Server()
+config = Config(
+    host="127.0.0.1",
+    port=8000,
+    max_size=10 * 1024 * 1024,  # ~10KB
+    timeout=30.0,
+    buffer=8192,
+)
+
+app = Server(config=config)
 
 
 # Requested path middleware
