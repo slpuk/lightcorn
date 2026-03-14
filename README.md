@@ -15,6 +15,8 @@
 ## Project Structure
 ```text
 lightcorn
+├── examples/
+│   └── example.py      # API example
 ├── lightcorn/
 │   ├── __init__.py     # Package exports and metadata
 │   ├── logger.py       # Loggity-based logger module
