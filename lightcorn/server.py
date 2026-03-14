@@ -1,137 +1,199 @@
 import asyncio
-import traceback
+import time
 from dataclasses import dataclass
+from typing import Dict, Any, Optional, Callable
+from .logger import Logger, Colors
+
+log = Logger()
+
 
 @dataclass
 class Config:
     host: str = "127.0.0.1"
     port: int = 8000
-    max_size: int = 1024 * 1024
-    timeout: float = 10.0
+    max_size: int = 10 * 1024 * 1024
+    timeout: float = 30.0
+    buffer: int = 8192
+
 
 class Server:
-    __version__ = "0.4.0-alpha.3"
+    __version__ = "0.5.0-alpha.4"
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, debug=False):
         self.config = config or Config()
-        self.routes = {"GET": {}, "POST": {}, "PUT": {}, "DELETE": {}}
-        self.server = None
+        self.middlewares = []
+        self.routes = {}
+
+    def use(self, middleware):
+        self.middlewares.append(middleware)
+        return self
 
     def route(self, path, methods=None):
         methods = methods or ["GET"]
+
         def dec(f):
             for m in methods:
-                self.routes[m][path] = f
+                self.routes[(path, m)] = f
             return f
+
         return dec
 
     async def _parse(self, reader):
+        # Headers
         data = b""
         while b"\r\n\r\n" not in data:
             if len(data) > self.config.max_size:
-                raise ValueError("Headers too big")
-            chunk = await reader.read(512)
+                raise ValueError("Headers too large")
+            chunk = await reader.read(self.config.buffer)
             if not chunk:
-                raise ConnectionError("No data")
+                raise ConnectionError("Client disconnected")
             data += chunk
-        
+
         head, body = data.split(b"\r\n\r\n", 1)
         lines = head.split(b"\r\n")
-        
-        # Start line
-        sline = lines[0].decode().split()
-        if len(sline) < 3:
-            raise ValueError("Bad request line")
-        method, path = sline[0], sline[1]
-        
+
+        # Request line
+        rline = lines[0].decode().split()
+        if len(rline) != 3:
+            raise ValueError("Invalid request line")
+        method, path, version = rline
+
+        # Parse path and query
+        path_parts = path.split("?", 1)
+        path = path_parts[0]
+        qs = path_parts[1].encode() if len(path_parts) > 1 else b""
+
         # Headers
-        headers = {}
+        headers = []
+        clen = 0
         for line in lines[1:]:
             if b":" in line:
                 k, v = line.split(b":", 1)
-                headers[k.strip().lower().decode()] = v.strip().decode()
-        
+                k = k.strip()
+                v = v.strip()
+                headers.append((k, v))
+                if k.lower() == b"content-length":
+                    clen = int(v)
+                    if clen > self.config.max_size:
+                        raise ValueError("Body too large")
+
         # Body
-        clen = int(headers.get("content-length", 0))
-        if clen > self.config.max_size:
-            raise ValueError("Body too big")
-        
         while len(body) < clen:
-            chunk = await reader.read(min(1024, clen - len(body)))
+            chunk = await reader.read(min(self.config.buffer, clen - len(body)))
             if not chunk:
                 break
             body += chunk
-        
-        return method, path, headers, body
 
-    async def _send(self, writer, status, body, headers=None):
-        status_text = {200: "OK", 404: "Not Found", 500: "Error"}.get(status, "OK")
-        writer.write(f"HTTP/1.1 {status} {status_text}\r\n".encode())
-        writer.write(f"Content-Length: {len(body)}\r\n".encode())
-        for k, v in (headers or {}).items():
-            writer.write(f"{k}: {v}\r\n".encode())
-        writer.write(b"\r\n")
-        writer.write(body)
-        await writer.drain()
+        scope = {
+            "type": "http",
+            "method": method.upper(),
+            "path": path,
+            "query_string": qs,
+            "headers": headers,
+            "version": version.split("/")[-1],
+        }
+        return scope, body
 
     async def handle(self, r, w):
-        client = w.get_extra_info('peername')
-        print(f"Client: {client}")
-        
+        client = w.get_extra_info("peername")
+        start = time.time()
+
         try:
-            method, path, headers, body = await asyncio.wait_for(
+            scope, body = await asyncio.wait_for(
                 self._parse(r), timeout=self.config.timeout
             )
-            
-            handler = self.routes.get(method, {}).get(path)
-            if handler:
+
+            # Message queues
+            recv_q = asyncio.Queue()
+            send_q = asyncio.Queue()
+            await recv_q.put({"type": "http.request", "body": body})
+
+            # Find handler
+            handler = self.routes.get((scope["path"], scope["method"]))
+            if not handler:
+                handler = self.routes.get((scope["path"], "GET"))
+
+            async def receive():
+                return await recv_q.get()
+
+            async def send(msg):
+                await send_q.put(msg)
+
+            # Run with middlewares
+            app = handler if handler else self._not_found
+            for mw in reversed(self.middlewares):
+                app = mw(app)
+
+            # Execute
+            task = asyncio.create_task(app(scope, receive, send))
+
+            # Send response
+            try:
+                start_msg = await send_q.get()
+                if start_msg["type"] == "http.response.start":
+                    status = start_msg["status"]
+                    headers = start_msg.get("headers", [])
+
+                    w.write(f"HTTP/1.1 {status} OK\r\n".encode())
+                    for k, v in headers:
+                        w.write(k + b": " + v + b"\r\n")
+                    w.write(b"\r\n")
+
+                    body_msg = await send_q.get()
+                    if body_msg["type"] == "http.response.body":
+                        w.write(body_msg.get("body", b""))
+
+                    await w.drain()
+            finally:
+                task.cancel()
                 try:
-                    res = await handler(headers, body)
-                    if isinstance(res, tuple):
-                        body, status, headers = res + ({},) if len(res) == 2 else res
-                    else:
-                        body, status, headers = res, 200, {}
-                except Exception as e:
-                    body, status, headers = f"Handler error: {e}".encode(), 500, {}
-            else:
-                body, status, headers = b"Not Found", 404, {}
-            
-            await self._send(w, status, body, headers)
-            
+                    await task
+                except:
+                    pass
+
+            connection_log = f"{client} {scope['method']} -> {scope['path']} {time.time()-start:.3f}s"
+            log.debug(connection_log)
+
         except asyncio.TimeoutError:
-            await self._send(w, 408, b"Timeout")
-        except ValueError as e:
-            await self._send(w, 400, str(e).encode())
+            w.write(b"HTTP/1.1 408 Timeout\r\n\r\nTimeout")
+            await w.drain()
         except Exception as e:
-            traceback.print_exc()
-            await self._send(w, 500, b"Server Error")
+            log.error(f"Unhandled error: {e}")
+            w.write(b"HTTP/1.1 500 Error\r\n\r\nError")
+            await w.drain()
         finally:
             w.close()
             await w.wait_closed()
 
-    async def run(self):
-        self.server = await asyncio.start_server(
-            self.handle, self.config.host, self.config.port
+    async def _not_found(self, scope, receive, send):
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 404,
+                "headers": [[b"content-type", b"text/plain"]],
+            }
         )
-        print(f"\033[32mINFO:\033[0m\t\033[1mLightcorn\033[0m {Server.__version__}")
-        print(f"\033[32mINFO:\033[0m\tRunning on http://{Config.host}:{Config.port}/")
-        await self.server.serve_forever()
+        await send({"type": "http.response.body", "body": b"Not Found"})
 
-if __name__ == '__main__':
-    app = Server(Config(port=8000))
+    async def run(self):
+        s = await asyncio.start_server(self.handle, self.config.host, self.config.port)
+        log.info(f"\033[1mLightcorn\033[0m {Server.__version__}")
+        log.info(f"Running on http://{self.config.host}:{self.config.port}/")
+        await s.serve_forever()
+
+
+if __name__ == "__main__":
+    app = Server()
 
     @app.route("/", ["GET"])
-    async def root(h, b):
-        return b"Hello World!"
-
-    @app.route("/about", ["GET"])
-    async def about(h, b):
-        text = f"Lightcorn {Server.__version__}"
-        return text.encode()
-
-    @app.route("/data", ["POST"])
-    async def data(h, b):
-        return b"Received: " + b, 201, {"X-Custom": "Header"}
+    async def root(scope, recv, send):
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [[b"content-type", b"text/plain"]],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"Hello World!"})
 
     asyncio.run(app.run())
-    
